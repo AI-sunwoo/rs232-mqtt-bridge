@@ -10,18 +10,15 @@ on:
         description: 'Version number (e.g., 1.0.0)'
         required: true
 
-env:
-  IDF_VERSION: v5.1.2
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.1.2
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        submodules: 'recursive'
 
     - name: Get version
       id: version
@@ -34,28 +31,19 @@ jobs:
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
         echo "Building version: $VERSION"
 
-    - name: Setup ESP-IDF
-      uses: espressif/esp-idf-ci-action@v1
-      with:
-        esp_idf_version: ${{ env.IDF_VERSION }}
-        target: esp32s3
-        path: '.'
-
     - name: Update version in code
       run: |
         VERSION=${{ steps.version.outputs.VERSION }}
-        MAJOR=$(echo $VERSION | cut -d. -f1)
-        MINOR=$(echo $VERSION | cut -d. -f2)
-        PATCH=$(echo $VERSION | cut -d. -f3)
         
         # Update ota_handler.c FIRMWARE_VERSION
         sed -i "s/#define FIRMWARE_VERSION.*\".*\"/#define FIRMWARE_VERSION    \"$VERSION\"/" main/ota_handler.c
         
         echo "Updated version to $VERSION"
+        cat main/ota_handler.c | grep FIRMWARE_VERSION
 
     - name: Build firmware
       run: |
-        . $IDF_PATH/export.sh
+        . /opt/esp/idf/export.sh
         idf.py build
         
     - name: Prepare release artifacts
@@ -70,19 +58,20 @@ jobs:
         sha256sum release/firmware_v${VERSION}.bin > release/firmware_v${VERSION}.sha256
         
         # Create version.json
-        SIZE=$(stat -f%z release/firmware_v${VERSION}.bin 2>/dev/null || stat -c%s release/firmware_v${VERSION}.bin)
-        cat > release/version.json << EOF
-        {
-          "version": "$VERSION",
-          "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/firmware_v${VERSION}.bin",
-          "size": $SIZE,
-          "release_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-          "changelog": "See release notes"
-        }
-        EOF
+        SIZE=$(stat -c%s release/firmware_v${VERSION}.bin)
+        cat > release/version.json << JSONEOF
+{
+  "version": "$VERSION",
+  "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/firmware_v${VERSION}.bin",
+  "size": $SIZE,
+  "release_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "changelog": "See release notes"
+}
+JSONEOF
         
         echo "Release artifacts prepared"
         ls -la release/
+        cat release/version.json
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -106,7 +95,7 @@ jobs:
           - See commit history for details
           
           ### Download
-          - `firmware_v${{ steps.version.outputs.VERSION }}.bin` - ESP32-S3 firmware binary
+          - firmware_v${{ steps.version.outputs.VERSION }}.bin - ESP32-S3 firmware binary
           
           ### Installation
           1. Open the RS232-MQTT app on your smartphone
@@ -115,20 +104,6 @@ jobs:
           4. The app will automatically detect and download this version
           
           ### SHA256 Checksum
-          See `firmware_v${{ steps.version.outputs.VERSION }}.sha256`
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Update version.json in repo
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        VERSION=${{ steps.version.outputs.VERSION }}
-        cp release/version.json firmware/version.json
-        
-        git config user.name "GitHub Actions"
-        git config user.email "actions@github.com"
-        git add firmware/version.json
-        git commit -m "Update version.json to v${VERSION}" || echo "No changes to commit"
-        git push origin HEAD:main || echo "Push failed - may need manual update"
+          See firmware_v${{ steps.version.outputs.VERSION }}.sha256
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
