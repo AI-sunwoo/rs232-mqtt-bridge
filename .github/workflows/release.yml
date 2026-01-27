@@ -34,10 +34,7 @@ jobs:
     - name: Update version in code
       run: |
         VERSION=${{ steps.version.outputs.VERSION }}
-        
-        # Update ota_handler.c FIRMWARE_VERSION
         sed -i "s/#define FIRMWARE_VERSION.*\".*\"/#define FIRMWARE_VERSION    \"$VERSION\"/" main/ota_handler.c
-        
         echo "Updated version to $VERSION"
         cat main/ota_handler.c | grep FIRMWARE_VERSION
 
@@ -50,25 +47,10 @@ jobs:
       run: |
         VERSION=${{ steps.version.outputs.VERSION }}
         mkdir -p release
-        
-        # Copy binary
         cp build/rs232_mqtt_bridge.bin release/firmware_v${VERSION}.bin
-        
-        # Generate SHA256 checksum
         sha256sum release/firmware_v${VERSION}.bin > release/firmware_v${VERSION}.sha256
-        
-        # Create version.json
         SIZE=$(stat -c%s release/firmware_v${VERSION}.bin)
-        cat > release/version.json << JSONEOF
-{
-  "version": "$VERSION",
-  "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/firmware_v${VERSION}.bin",
-  "size": $SIZE,
-  "release_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "changelog": "See release notes"
-}
-JSONEOF
-        
+        echo "{\"version\":\"$VERSION\",\"url\":\"https://github.com/${{ github.repository }}/releases/download/v${VERSION}/firmware_v${VERSION}.bin\",\"size\":$SIZE,\"release_date\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"changelog\":\"See release notes\"}" > release/version.json
         echo "Release artifacts prepared"
         ls -la release/
         cat release/version.json
@@ -91,19 +73,12 @@ JSONEOF
         body: |
           ## RS232 to MQTT Bridge Firmware v${{ steps.version.outputs.VERSION }}
           
-          ### Changes
-          - See commit history for details
-          
           ### Download
-          - firmware_v${{ steps.version.outputs.VERSION }}.bin - ESP32-S3 firmware binary
+          - firmware binary for ESP32-S3
           
           ### Installation
-          1. Open the RS232-MQTT app on your smartphone
-          2. Connect to the device via BLE
-          3. Go to Settings > Firmware Update
-          4. The app will automatically detect and download this version
-          
-          ### SHA256 Checksum
-          See firmware_v${{ steps.version.outputs.VERSION }}.sha256
+          1. Connect to device via BLE app
+          2. Go to Settings and Firmware Update
+          3. App will automatically detect this version
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
