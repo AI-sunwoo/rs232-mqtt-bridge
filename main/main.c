@@ -575,39 +575,39 @@ static void wifi_event_handler(bool connected)
 static void ota_progress_callback(ota_state_t state, uint8_t progress, ota_error_t error)
 {
     // Send OTA progress to BLE app
-    uint8_t progress_data[32];
+    uint8_t progress_data[64];  // Increased buffer size for JSON strings
     int len = 0;
     
     switch (state) {
         case OTA_STATE_CHECKING:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"checking\",\"progress\":%d}", progress);
+                          "{\"st\":\"check\",\"p\":%d}", progress);
             break;
         case OTA_STATE_DOWNLOADING:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"downloading\",\"progress\":%d}", progress);
+                          "{\"st\":\"dl\",\"p\":%d}", progress);
             break;
         case OTA_STATE_VERIFYING:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"verifying\",\"progress\":%d}", progress);
+                          "{\"st\":\"verify\",\"p\":%d}", progress);
             break;
         case OTA_STATE_APPLYING:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"applying\",\"progress\":%d}", progress);
+                          "{\"st\":\"apply\",\"p\":%d}", progress);
             break;
         case OTA_STATE_SUCCESS:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"success\",\"progress\":100}");
+                          "{\"st\":\"ok\",\"p\":100}");
             ESP_LOGI(TAG, "OTA Success - Rebooting...");
             break;
         case OTA_STATE_FAILED:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"failed\",\"error\":%d}", (int)error);
+                          "{\"st\":\"fail\",\"err\":%d}", (int)error);
             ESP_LOGE(TAG, "OTA Failed with error: %d", (int)error);
             break;
         case OTA_STATE_NO_UPDATE:
             len = snprintf((char*)progress_data, sizeof(progress_data),
-                          "{\"state\":\"no_update\",\"progress\":100}");
+                          "{\"st\":\"latest\",\"p\":100}");
             break;
         default:
             return;
