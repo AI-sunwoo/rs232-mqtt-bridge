@@ -128,6 +128,10 @@ static esp_err_t parse_mqtt_config(const uint8_t *data, uint16_t len)
     if (len < 4) return ESP_ERR_INVALID_ARG;
 
     mqtt_config_data_t config = {0};
+    config.port = DEFAULT_MQTT_PORT;
+    config.qos = DEFAULT_MQTT_QOS;
+    config.use_tls = true;  // TLS by default
+    
     uint16_t offset = 0;
 
     // Broker
@@ -169,7 +173,7 @@ static esp_err_t parse_mqtt_config(const uint8_t *data, uint16_t len)
         strcpy(config.client_id, g_device_id);
     }
 
-    // Topic
+    // Topic (Legacy)
     if (offset >= len) return ESP_ERR_INVALID_ARG;
     uint8_t topic_len = data[offset++];
     if (offset + topic_len > len) return ESP_ERR_INVALID_ARG;
@@ -183,15 +187,41 @@ static esp_err_t parse_mqtt_config(const uint8_t *data, uint16_t len)
 
     // TLS
     if (offset < len) {
-        config.use_tls = (data[offset] != 0);
+        config.use_tls = (data[offset++] != 0);
     }
 
-    ESP_LOGI(TAG, "MQTT config parsed: broker=%s:%d, topic=%s",
-             config.broker, config.port, config.topic);
+    // ========== 신규 필드 (SaaS 지원) ==========
+    
+    // User ID (SaaS)
+    if (offset < len) {
+        uint8_t uid_len = data[offset++];
+        if (uid_len <= MQTT_USER_ID_MAX_LEN && offset + uid_len <= len) {
+            memcpy(config.user_id, &data[offset], uid_len);
+            offset += uid_len;
+        }
+    }
+
+    // Device ID
+    if (offset < len) {
+        uint8_t did_len = data[offset++];
+        if (did_len <= MQTT_DEVICE_ID_MAX_LEN && offset + did_len <= len) {
+            memcpy(config.device_id, &data[offset], did_len);
+            offset += did_len;
+        }
+    }
+
+    // Generate default device_id if not provided
+    if (strlen(config.device_id) == 0 && strlen(config.client_id) > 0) {
+        strncpy(config.device_id, config.client_id, MQTT_DEVICE_ID_MAX_LEN);
+    }
+
+    ESP_LOGI(TAG, "MQTT config parsed: broker=%s:%d, user_id=%s, device_id=%s, topic=%s",
+             config.broker, config.port, config.user_id, config.device_id, config.topic);
 
     memcpy(&g_mqtt_config, &config, sizeof(mqtt_config_data_t));
     return nvs_save_mqtt_config(&config);
 }
+
 
 static esp_err_t parse_uart_config(const uint8_t *data, uint16_t len)
 {
