@@ -33,9 +33,19 @@ static void mqtt_event_handler(void *args, esp_event_base_t base,
             ESP_LOGI(TAG, "Connected to broker");
             s_connected = true;
             
-            // Subscribe to command topic
-            char cmd_topic[MQTT_TOPIC_MAX_LEN + 16];
-            snprintf(cmd_topic, sizeof(cmd_topic), "%s/cmd", s_config.topic);
+            // Subscribe to command topic (SaaS format)
+            char cmd_topic[MQTT_TOPIC_MAX_LEN + 32];
+            if (strlen(s_config.user_id) > 0 && strlen(s_config.device_id) > 0) {
+                // New SaaS topic format: user/{user_id}/device/{device_id}/cmd
+                snprintf(cmd_topic, sizeof(cmd_topic), "user/%s/device/%s/cmd", 
+                         s_config.user_id, s_config.device_id);
+            } else if (strlen(s_config.topic) > 0) {
+                // Legacy topic format: {topic}/cmd
+                snprintf(cmd_topic, sizeof(cmd_topic), "%s/cmd", s_config.topic);
+            } else {
+                // Fallback: use device_id only
+                snprintf(cmd_topic, sizeof(cmd_topic), "rs232/%s/cmd", s_config.device_id);
+            }
             esp_mqtt_client_subscribe(s_client, cmd_topic, s_config.qos);
             ESP_LOGI(TAG, "Subscribed: %s", cmd_topic);
             
@@ -150,6 +160,22 @@ static const char* data_type_str(data_type_t type)
     }
 }
 
+// Build topic string based on configuration
+static void build_topic(char *out, size_t out_size, const char *suffix)
+{
+    if (strlen(s_config.user_id) > 0 && strlen(s_config.device_id) > 0) {
+        // SaaS format: user/{user_id}/device/{device_id}/{suffix}
+        snprintf(out, out_size, "user/%s/device/%s/%s",
+                 s_config.user_id, s_config.device_id, suffix);
+    } else if (strlen(s_config.topic) > 0) {
+        // Legacy format: {topic}/{suffix}
+        snprintf(out, out_size, "%s/%s", s_config.topic, suffix);
+    } else {
+        // Fallback: rs232/{device_id}/{suffix}
+        snprintf(out, out_size, "rs232/%s/%s", s_config.device_id, suffix);
+    }
+}
+
 // Section 8.2: Data Message (JSON)
 esp_err_t mqtt_handler_publish_data(const char *device_id,
                                     const parsed_field_t *fields,
@@ -170,10 +196,12 @@ esp_err_t mqtt_handler_publish_data(const char *device_id,
         return ESP_ERR_NO_MEM;
     }
 
-    // 기본 정보
-    cJSON_AddStringToObject(root, "device_id", device_id);
+    // Device ID (use config if available)
+    const char *dev_id = (strlen(s_config.device_id) > 0) ? s_config.device_id : device_id;
+    cJSON_AddStringToObject(root, "device_id", dev_id);
     cJSON_AddNumberToObject(root, "timestamp", (double)time(NULL));
     cJSON_AddNumberToObject(root, "sequence", sequence);
+    cJSON_AddStringToObject(root, "protocol", "custom");
 
     // Raw hex 데이터
     if (raw_data && raw_len > 0) {
@@ -204,8 +232,8 @@ esp_err_t mqtt_handler_publish_data(const char *device_id,
     // JSON 문자열 변환 및 발행
     char *json_str = cJSON_PrintUnformatted(root);
     if (json_str) {
-        char topic[MQTT_TOPIC_MAX_LEN + 16];
-        snprintf(topic, sizeof(topic), "%s/data", s_config.topic);
+        char topic[MQTT_TOPIC_MAX_LEN + 32];
+        build_topic(topic, sizeof(topic), "data");
 
         int msg_id = esp_mqtt_client_publish(s_client, topic, json_str,
                                               strlen(json_str), s_config.qos, 0);
@@ -238,7 +266,9 @@ esp_err_t mqtt_handler_publish_status(const char *device_id,
         return ESP_ERR_NO_MEM;
     }
 
-    cJSON_AddStringToObject(root, "device_id", device_id);
+    // Device ID (use config if available)
+    const char *dev_id = (strlen(s_config.device_id) > 0) ? s_config.device_id : device_id;
+    cJSON_AddStringToObject(root, "device_id", dev_id);
     cJSON_AddNumberToObject(root, "wifi_rssi", status->rssi);
     cJSON_AddBoolToObject(root, "mqtt_connected", status->mqtt_status != 0);
     cJSON_AddBoolToObject(root, "uart_active", status->uart_status != 0);
@@ -256,8 +286,8 @@ esp_err_t mqtt_handler_publish_status(const char *device_id,
 
     char *json_str = cJSON_PrintUnformatted(root);
     if (json_str) {
-        char topic[MQTT_TOPIC_MAX_LEN + 16];
-        snprintf(topic, sizeof(topic), "%s/status", s_config.topic);
+        char topic[MQTT_TOPIC_MAX_LEN + 32];
+        build_topic(topic, sizeof(topic), "status");
 
         int msg_id = esp_mqtt_client_publish(s_client, topic, json_str,
                                               strlen(json_str), s_config.qos, 1);

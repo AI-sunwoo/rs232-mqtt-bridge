@@ -21,12 +21,39 @@ esp_err_t data_parser_init(void)
     return ESP_OK;
 }
 
+/**
+ * @brief 데이터 필드 정의 설정 (특허 청구항 2)
+ * 
+ * 특허 명세서 "필드 추출기 동적 바인딩":
+ * "각 데이터 필드의 오프셋, 타입, 바이트 순서, 스케일 팩터가 
+ *  런타임에 바인딩되어, 새로운 필드 정의가 즉시 적용된다"
+ * 
+ * 이 함수 호출 시:
+ * 1. 새로운 필드 정의가 메모리에 즉시 로드
+ * 2. 다음 파싱 호출부터 새 정의 사용
+ * 3. 재부팅 불필요
+ */
 esp_err_t data_parser_set_definition(const data_definition_t *def)
 {
     if (!def) return ESP_ERR_INVALID_ARG;
+    
+    // 런타임 필드 정의 즉시 업데이트
     memcpy(&s_def, def, sizeof(data_definition_t));
-    ESP_LOGI(TAG, "Definition set: %d fields, offset %d", 
+    
+    ESP_LOGI(TAG, "Field definition dynamically bound: %d fields, data_offset=%d", 
              def->field_count, def->data_offset);
+    
+    // 로그: 각 필드의 동적 바인딩 정보
+    for (int i = 0; i < def->field_count && i < 8; i++) {
+        char name[MAX_FIELD_NAME_LEN];
+        data_parser_get_field_name(def, i, name, sizeof(name));
+        ESP_LOGI(TAG, "  Field[%d]: %s (type=0x%02X, offset=%d, %s endian)",
+                 i, name, 
+                 def->fields[i].field_type,
+                 def->fields[i].start_offset,
+                 def->fields[i].byte_order ? "big" : "little");
+    }
+    
     return ESP_OK;
 }
 

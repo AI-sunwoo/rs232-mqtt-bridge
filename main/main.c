@@ -468,6 +468,10 @@ static void uart_frame_handler(const uint8_t *data, size_t length)
 
 /*******************************************************************************
  * Data Processing Task
+ * 
+ * 특허 2.4절 "실시간 검증부" 구현:
+ * - 설정 전송 직후 파싱 결과를 BLE로 실시간 전송
+ * - Raw Data + 파싱된 물리값 + CRC 검증 결과 포함
  ******************************************************************************/
 static void data_processing_task(void *arg)
 {
@@ -491,27 +495,72 @@ static void data_processing_task(void *arg)
                                               item.data, item.length, g_sequence);
                 }
 
-                // Send to BLE if monitoring enabled and connected
-                if (g_monitoring_enabled && ble_service_is_connected()) {
-                    // Build compact data for BLE notification
-                    uint8_t ble_data[256];
+                // 특허 실시간 검증부: BLE 연결 시 항상 파싱 결과 전송 (모니터링 여부 무관)
+                // 이를 통해 사용자가 설정 변경 후 즉시 결과 확인 가능
+                if (ble_service_is_connected()) {
+                    // Build enhanced data for BLE notification (특허 요구사항)
+                    // 포함: Raw Hex + 파싱된 물리값 + CRC 검증 결과
+                    uint8_t ble_data[512];
                     uint16_t offset = 0;
 
-                    // Header
+                    // Packet header
+                    ble_data[offset++] = PACKET_STX;
+                    ble_data[offset++] = RSP_DATA;
+                    uint16_t len_offset = offset;
+                    offset += 2;  // Length placeholder
+
+                    // Header: timestamp(4) + sequence(2) + field_count(1) + format(1)
                     uint32_t timestamp = (uint32_t)(esp_timer_get_time() / 1000000);
                     memcpy(&ble_data[offset], &timestamp, 4);
                     offset += 4;
                     memcpy(&ble_data[offset], &g_sequence, 2);
                     offset += 2;
                     ble_data[offset++] = field_count;
-                    ble_data[offset++] = 2;  // Format: Compact
+                    ble_data[offset++] = 1;  // Format: JSON-like with raw
 
-                    // Field values (scaled, as float)
-                    for (int i = 0; i < field_count && offset + 4 < sizeof(ble_data); i++) {
+                    // Raw data length and hex (최대 32 bytes)
+                    uint8_t raw_len = (item.length > 32) ? 32 : item.length;
+                    ble_data[offset++] = raw_len;
+                    for (int i = 0; i < raw_len && offset + 2 < sizeof(ble_data) - 10; i++) {
+                        // Convert to hex characters
+                        uint8_t byte = item.data[i];
+                        ble_data[offset++] = "0123456789ABCDEF"[byte >> 4];
+                        ble_data[offset++] = "0123456789ABCDEF"[byte & 0x0F];
+                    }
+
+                    // CRC verification result (1 = success, 0 = fail)
+                    ble_data[offset++] = 1;  // CRC OK (if we got here, CRC passed)
+
+                    // Field values (scaled, as float) with names
+                    for (int i = 0; i < field_count && offset + 40 < sizeof(ble_data) - 10; i++) {
+                        // Name length + name (max 16 chars)
+                        uint8_t name_len = strlen(fields[i].name);
+                        if (name_len > 16) name_len = 16;
+                        ble_data[offset++] = name_len;
+                        memcpy(&ble_data[offset], fields[i].name, name_len);
+                        offset += name_len;
+
+                        // Value as float
                         float val = (float)fields[i].scaled_value;
                         memcpy(&ble_data[offset], &val, 4);
                         offset += 4;
+
+                        // Data type
+                        ble_data[offset++] = fields[i].type;
                     }
+
+                    // Fill in length
+                    uint16_t payload_len = offset - 4;  // Exclude STX, CMD, LEN
+                    ble_data[len_offset] = payload_len & 0xFF;
+                    ble_data[len_offset + 1] = (payload_len >> 8) & 0xFF;
+
+                    // CRC and ETX
+                    uint8_t crc = 0;
+                    for (int i = 1; i < offset; i++) {
+                        crc ^= ble_data[i];
+                    }
+                    ble_data[offset++] = crc;
+                    ble_data[offset++] = PACKET_ETX;
 
                     ble_service_notify_data(ble_data, offset);
                 }

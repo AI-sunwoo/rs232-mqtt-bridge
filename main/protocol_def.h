@@ -172,6 +172,8 @@ typedef struct {
 #define MQTT_PASSWORD_MAX_LEN   64
 #define MQTT_CLIENT_ID_MAX_LEN  64
 #define MQTT_TOPIC_MAX_LEN      128
+#define MQTT_USER_ID_MAX_LEN    64
+#define MQTT_DEVICE_ID_MAX_LEN  32
 
 typedef struct {
     char broker[MQTT_BROKER_MAX_LEN + 1];
@@ -179,7 +181,9 @@ typedef struct {
     char username[MQTT_USERNAME_MAX_LEN + 1];
     char password[MQTT_PASSWORD_MAX_LEN + 1];
     char client_id[MQTT_CLIENT_ID_MAX_LEN + 1];
-    char topic[MQTT_TOPIC_MAX_LEN + 1];
+    char topic[MQTT_TOPIC_MAX_LEN + 1];         // Legacy topic (optional)
+    char user_id[MQTT_USER_ID_MAX_LEN + 1];     // SaaS user ID
+    char device_id[MQTT_DEVICE_ID_MAX_LEN + 1]; // Device ID
     uint8_t qos;
     bool use_tls;
 } mqtt_config_data_t;
@@ -356,7 +360,8 @@ typedef struct {
 #define DEFAULT_FLOW_CONTROL    0
 
 // Default MQTT settings
-#define DEFAULT_MQTT_PORT       1883
+#define DEFAULT_MQTT_PORT       8883    // TLS port (recommended)
+#define DEFAULT_MQTT_PORT_TCP   1883    // Non-TLS port
 #define DEFAULT_MQTT_QOS        1
 
 // UART Hardware Configuration

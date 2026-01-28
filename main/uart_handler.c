@@ -68,6 +68,26 @@ static bool verify_crc(const uint8_t *data, size_t len)
         uint16_t recv = data[len - 2] | (data[len - 1] << 8);
         return (calc == recv);
     }
+    else if (s_proto_cfg.type == PROTOCOL_MODBUS_ASCII) {
+        // Modbus ASCII: LRC (Longitudinal Redundancy Check)
+        // 프레임 형식: ':' ADDR(2) FUNC(2) DATA... LRC(2) CR LF
+        if (len < 9) return false;
+        
+        // LRC 계산: 주소부터 데이터 끝까지의 각 바이트 합의 2의 보수
+        // ASCII로 인코딩된 헥사 값을 바이너리로 변환 후 계산
+        uint8_t lrc = 0;
+        for (size_t i = 1; i < len - 4; i += 2) {
+            char hex[3] = {data[i], data[i + 1], 0};
+            lrc += (uint8_t)strtol(hex, NULL, 16);
+        }
+        lrc = (~lrc + 1) & 0xFF;  // 2's complement
+        
+        // 수신된 LRC
+        char lrc_hex[3] = {data[len - 4], data[len - 3], 0};
+        uint8_t recv_lrc = (uint8_t)strtol(lrc_hex, NULL, 16);
+        
+        return (lrc == recv_lrc);
+    }
     else if (s_proto_cfg.type == PROTOCOL_NMEA_0183) {
         if (!s_proto_cfg.config.nmea.validate_checksum) return true;
         // NMEA: $....*XX\r\n
@@ -82,6 +102,40 @@ static bool verify_crc(const uint8_t *data, size_t len)
                 return (calc == recv);
             }
         }
+        return false;
+    }
+    else if (s_proto_cfg.type == PROTOCOL_IEC_60870_101) {
+        // IEC 60870-5-101 체크섬 검증
+        // 고정 프레임 (0x10): CS = (CF + AF) mod 256
+        // 가변 프레임 (0x68): CS = sum of user data mod 256
+        
+        if (len == 1 && data[0] == 0xE5) {
+            return true;  // Single character ACK - no checksum
+        }
+        
+        if (len >= 5 && data[0] == 0x10) {
+            // 고정 프레임: 10 CF AF CS 16
+            uint8_t calc = (data[1] + data[2]) & 0xFF;
+            return (calc == data[3] && data[4] == 0x16);
+        }
+        
+        if (len >= 6 && data[0] == 0x68) {
+            // 가변 프레임: 68 L L 68 [User Data] CS 16
+            uint8_t frame_len = data[1];
+            if (data[2] != frame_len || data[3] != 0x68) return false;
+            
+            // 체크섬: User Data 합
+            uint8_t calc = 0;
+            for (size_t i = 4; i < 4 + frame_len; i++) {
+                calc += data[i];
+            }
+            
+            size_t cs_pos = 4 + frame_len;
+            if (cs_pos >= len - 1) return false;
+            
+            return (calc == data[cs_pos] && data[cs_pos + 1] == 0x16);
+        }
+        
         return false;
     }
 
@@ -145,11 +199,47 @@ static bool is_frame_complete(const uint8_t *data, size_t len)
             }
         }
     }
+    else if (s_proto_cfg.type == PROTOCOL_MODBUS_ASCII) {
+        // Modbus ASCII: ':' 시작, CR+LF 종료
+        if (len >= 9 && data[0] == ':' &&
+            data[len - 2] == '\r' && data[len - 1] == '\n') {
+            return true;
+        }
+    }
     else if (s_proto_cfg.type == PROTOCOL_NMEA_0183) {
         // NMEA: $...*XX\r\n
         if (len >= 6 && data[0] == '$' &&
             data[len - 2] == '\r' && data[len - 1] == '\n') {
             return true;
+        }
+    }
+    else if (s_proto_cfg.type == PROTOCOL_IEC_60870_101) {
+        // IEC 60870-5-101 (SCADA 시리얼)
+        // 가변 길이 프레임: 0x68 L L 0x68 [CF AF] [ASDU] CS 0x16
+        // 고정 길이 프레임: 0x10 CF AF CS 0x16
+        // 단일 문자: 0xE5 (ACK)
+        
+        if (len == 1 && data[0] == 0xE5) {
+            return true;  // Single character ACK
+        }
+        
+        if (len >= 5 && data[0] == 0x10) {
+            // 고정 길이 프레임 (5 bytes: 10 CF AF CS 16)
+            if (len >= 5 && data[len - 1] == 0x16) {
+                return true;
+            }
+        }
+        
+        if (len >= 6 && data[0] == 0x68) {
+            // 가변 길이 프레임
+            uint8_t frame_len = data[1];
+            // 전체 길이 = 4 (header) + L + 2 (CS + end)
+            if (data[2] == frame_len && data[3] == 0x68) {
+                size_t total_len = 4 + frame_len + 2;
+                if (len >= total_len && data[len - 1] == 0x16) {
+                    return true;
+                }
+            }
         }
     }
 
@@ -357,8 +447,30 @@ void uart_handler_set_callback(uart_frame_cb_t cb)
 esp_err_t uart_handler_update_protocol(const protocol_config_data_t *cfg)
 {
     if (!cfg) return ESP_ERR_INVALID_ARG;
+    
+    /**
+     * 특허 청구항 2: 무중단 컨텍스트 전환
+     * "현재 처리 중인 프레임 완료 후 다음 프레임부터 새로운 규칙을 적용"
+     * 
+     * 구현:
+     * 1. 현재 프레임 버퍼 리셋 (진행 중인 불완전 프레임 폐기)
+     * 2. 새로운 파싱 규칙 즉시 적용
+     * 3. 다음 수신 데이터부터 새 규칙으로 처리
+     * 
+     * 이를 통해 재부팅 없이 파싱 파이프라인 동적 재구성 가능
+     */
+    
+    // 새 프로토콜 설정 즉시 적용 (런타임 파싱 규칙 관리)
     memcpy(&s_proto_cfg, cfg, sizeof(protocol_config_data_t));
+    
+    // 상태 기계 동적 재구성: 프레임 버퍼 리셋
+    // 현재 수집 중인 불완전한 프레임은 폐기하고
+    // 새로운 STX/ETX/길이 설정으로 프레임 탐지 시작
     s_frame_idx = 0;
-    ESP_LOGI(TAG, "Protocol updated: type=%d", cfg->type);
+    
+    ESP_LOGI(TAG, "Protocol dynamically updated (no reboot): type=%d", cfg->type);
+    ESP_LOGI(TAG, "  - Frame parsing pipeline reconfigured");
+    ESP_LOGI(TAG, "  - Next frame will use new settings");
+    
     return ESP_OK;
 }

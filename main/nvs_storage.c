@@ -92,12 +92,15 @@ esp_err_t nvs_save_mqtt_config(const mqtt_config_data_t *config)
     nvs_set_str(handle, "password", config->password);
     nvs_set_str(handle, "client_id", config->client_id);
     nvs_set_str(handle, "topic", config->topic);
+    nvs_set_str(handle, "user_id", config->user_id);       // SaaS user ID
+    nvs_set_str(handle, "device_id", config->device_id);   // Device ID
     nvs_set_u8(handle, "qos", config->qos);
     nvs_set_u8(handle, "use_tls", config->use_tls ? 1 : 0);
 
     ret = nvs_commit(handle);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "MQTT config saved: %s:%d", config->broker, config->port);
+        ESP_LOGI(TAG, "MQTT config saved: %s:%d (user=%s, device=%s)", 
+                 config->broker, config->port, config->user_id, config->device_id);
     }
 
     nvs_close(handle);
@@ -109,6 +112,7 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
     memset(config, 0, sizeof(mqtt_config_data_t));
     config->port = DEFAULT_MQTT_PORT;
     config->qos = DEFAULT_MQTT_QOS;
+    config->use_tls = true;  // TLS enabled by default
 
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(NVS_NS_MQTT, NVS_READONLY, &handle);
@@ -136,6 +140,12 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
     len = sizeof(config->topic);
     nvs_get_str(handle, "topic", config->topic, &len);
     
+    len = sizeof(config->user_id);
+    nvs_get_str(handle, "user_id", config->user_id, &len);
+    
+    len = sizeof(config->device_id);
+    nvs_get_str(handle, "device_id", config->device_id, &len);
+    
     nvs_get_u8(handle, "qos", &config->qos);
     
     uint8_t tls;
@@ -143,7 +153,8 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
         config->use_tls = (tls != 0);
     }
 
-    ESP_LOGI(TAG, "MQTT config loaded: %s:%d", config->broker, config->port);
+    ESP_LOGI(TAG, "MQTT config loaded: %s:%d (user=%s, device=%s)", 
+             config->broker, config->port, config->user_id, config->device_id);
     nvs_close(handle);
     return ESP_OK;
 }

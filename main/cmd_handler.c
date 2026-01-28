@@ -64,6 +64,10 @@ esp_err_t cmd_parse_mqtt_config(const uint8_t *data, uint16_t len, mqtt_config_d
     if (len < 4 || !config) return ESP_ERR_INVALID_ARG;
 
     memset(config, 0, sizeof(mqtt_config_data_t));
+    config->port = DEFAULT_MQTT_PORT;
+    config->qos = DEFAULT_MQTT_QOS;
+    config->use_tls = true;  // TLS by default
+    
     uint16_t offset = 0;
 
     // Broker
@@ -100,7 +104,7 @@ esp_err_t cmd_parse_mqtt_config(const uint8_t *data, uint16_t len, mqtt_config_d
     memcpy(config->client_id, &data[offset], cid_len);
     offset += cid_len;
 
-    // Topic
+    // Topic (Legacy - optional)
     if (offset >= len) return ESP_ERR_INVALID_ARG;
     uint8_t topic_len = data[offset++];
     if (offset + topic_len > len) return ESP_ERR_INVALID_ARG;
@@ -114,10 +118,34 @@ esp_err_t cmd_parse_mqtt_config(const uint8_t *data, uint16_t len, mqtt_config_d
 
     // TLS
     if (offset < len) {
-        config->use_tls = (data[offset] != 0);
+        config->use_tls = (data[offset++] != 0);
     }
 
-    ESP_LOGI(TAG, "MQTT config parsed: broker=%s:%d", config->broker, config->port);
+    // User ID (SaaS) - New field
+    if (offset < len) {
+        uint8_t uid_len = data[offset++];
+        if (uid_len <= MQTT_USER_ID_MAX_LEN && offset + uid_len <= len) {
+            memcpy(config->user_id, &data[offset], uid_len);
+            offset += uid_len;
+        }
+    }
+
+    // Device ID - New field
+    if (offset < len) {
+        uint8_t did_len = data[offset++];
+        if (did_len <= MQTT_DEVICE_ID_MAX_LEN && offset + did_len <= len) {
+            memcpy(config->device_id, &data[offset], did_len);
+            offset += did_len;
+        }
+    }
+
+    // Generate default device_id if not provided
+    if (strlen(config->device_id) == 0 && strlen(config->client_id) > 0) {
+        strncpy(config->device_id, config->client_id, MQTT_DEVICE_ID_MAX_LEN);
+    }
+
+    ESP_LOGI(TAG, "MQTT config parsed: broker=%s:%d, user_id=%s, device_id=%s", 
+             config->broker, config->port, config->user_id, config->device_id);
     return ESP_OK;
 }
 
