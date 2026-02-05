@@ -34,9 +34,9 @@ jobs:
     - name: Update version in code
       run: |
         VERSION=${{ steps.version.outputs.VERSION }}
-        sed -i "s/#define FIRMWARE_VERSION.*\".*\"/#define FIRMWARE_VERSION    \"$VERSION\"/" main/ota_handler.c
-        echo "Updated version to $VERSION"
-        cat main/ota_handler.c | grep FIRMWARE_VERSION
+        sed -i "s/set(PROJECT_VER \".*\")/set(PROJECT_VER \"$VERSION\")/" CMakeLists.txt
+        echo "Updated PROJECT_VER to $VERSION"
+        grep PROJECT_VER CMakeLists.txt
 
     - name: Build firmware
       run: |

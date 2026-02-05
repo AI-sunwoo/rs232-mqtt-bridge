@@ -264,6 +264,15 @@ static void mqtt_event_handler(bool connected)
         ESP_LOGI(TAG, "MQTT connected");
         update_status();
         mqtt_handler_publish_status(g_device_id, &g_device_status);
+
+        // OTA 후 첫 부팅: MQTT 연결 성공 = 시스템 정상 → 펌웨어 유효 마킹
+        static bool s_ota_validated = false;
+        if (!s_ota_validated) {
+            s_ota_validated = true;
+            if (ota_handler_mark_valid() == ESP_OK) {
+                ESP_LOGI(TAG, "New firmware validated after successful MQTT connection");
+            }
+        }
     } else {
         ESP_LOGW(TAG, "MQTT disconnected");
     }
@@ -327,22 +336,25 @@ static void ble_command_handler(uint8_t cmd, const uint8_t *data, uint16_t len)
 
     // OTA commands handled locally (require ota_handler direct access)
     switch (cmd) {
-        case CMD_OTA_CHECK:
-            ota_handler_check_version();
-            ble_service_send_ack(cmd, RESULT_SUCCESS);
+        case CMD_OTA_CHECK: {
+            esp_err_t err = ota_handler_check_version();
+            ble_service_send_ack(cmd, (err == ESP_OK) ? RESULT_SUCCESS : RESULT_FAILED);
             return;
-        case CMD_OTA_START:
-            ota_handler_start();
-            ble_service_send_ack(cmd, RESULT_SUCCESS);
+        }
+        case CMD_OTA_START: {
+            esp_err_t err = ota_handler_start();
+            ble_service_send_ack(cmd, (err == ESP_OK) ? RESULT_SUCCESS : RESULT_FAILED);
             return;
+        }
         case CMD_OTA_ABORT:
             ota_handler_abort();
             ble_service_send_ack(cmd, RESULT_SUCCESS);
             return;
-        case CMD_OTA_ROLLBACK:
-            ota_handler_rollback();
-            ble_service_send_ack(cmd, RESULT_SUCCESS);
+        case CMD_OTA_ROLLBACK: {
+            esp_err_t err = ota_handler_rollback();
+            ble_service_send_ack(cmd, (err == ESP_OK) ? RESULT_SUCCESS : RESULT_FAILED);
             return;
+        }
         case CMD_OTA_GET_VERSION: {
             const ota_version_info_t *vi = ota_handler_get_version_info();
             uint8_t vd[64];

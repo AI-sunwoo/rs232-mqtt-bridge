@@ -24,41 +24,37 @@ static const char *TAG = "OTA_HANDLER";
  * Configuration - GitHub 저장소 설정
  ******************************************************************************/
 #define OTA_VERSION_URL     "https://raw.githubusercontent.com/AI-sunwoo/rs232-mqtt-bridge/main/firmware/version.json"
-#define OTA_TASK_STACK      8192
+#define OTA_TASK_STACK      12288   // TLS(mbedTLS) + HTTP + cJSON에 12KB 필요
 #define OTA_TASK_PRIORITY   5
 #define OTA_BUFFER_SIZE     4096
-#define OTA_TIMEOUT_MS      30000
+#define OTA_TIMEOUT_MS      60000   // 저속 네트워크 대응 60초
 
-// 현재 펌웨어 버전 (빌드 시 자동 설정 가능)
-#define FIRMWARE_VERSION    "1.0.0"
+// 현재 펌웨어 버전: esp_app_get_description()->version 사용 (CMakeLists.txt PROJECT_VER)
+// 하드코딩 제거 — CI/CD에서 CMakeLists.txt PROJECT_VER만 변경하면 됨
 
 /*******************************************************************************
- * Embedded CA Certificate for HTTPS
- * GitHub의 루트 CA 인증서 (DigiCert Global Root CA)
- * 프로덕션에서는 인증서를 활성화하세요
+ * TLS Certificate Configuration
+ * ESP-IDF 인증서 번들 사용 (다수의 루트 CA 포함, GitHub 리다이렉트 도메인 포함)
+ * 개별 PEM 파일보다 안정적: GitHub 인증서 체인 변경에 자동 대응
  ******************************************************************************/
-#ifdef CONFIG_OTA_USE_CERT
-extern const uint8_t server_cert_pem_start[] asm("_binary_github_ca_pem_start");
-extern const uint8_t server_cert_pem_end[] asm("_binary_github_ca_pem_end");
-#define OTA_CERT_PEM  (const char *)server_cert_pem_start
-#else
-#define OTA_CERT_PEM  NULL
-#endif
+#include "esp_crt_bundle.h"
 
-// 개발 중 인증서 검증 스킵 (프로덕션에서는 false로 설정)
-#define OTA_SKIP_CERT_VERIFY  true
+// 프로덕션: false, 개발(인증서 문제 디버깅 시): true
+#ifndef OTA_SKIP_CERT_VERIFY
+#define OTA_SKIP_CERT_VERIFY  false
+#endif
 
 /*******************************************************************************
  * Static Variables
  ******************************************************************************/
-static ota_state_t s_ota_state = OTA_STATE_IDLE;
-static ota_error_t s_ota_error = OTA_ERR_NONE;
+static volatile ota_state_t s_ota_state = OTA_STATE_IDLE;
+static volatile ota_error_t s_ota_error = OTA_ERR_NONE;
 static ota_version_info_t s_version_info = {0};
 static ota_progress_cb_t s_progress_callback = NULL;
 static TaskHandle_t s_ota_task_handle = NULL;
 static SemaphoreHandle_t s_ota_mutex = NULL;
-static bool s_abort_requested = false;
-static uint8_t s_progress = 0;
+static volatile bool s_abort_requested = false;
+static volatile uint8_t s_progress = 0;
 
 /*******************************************************************************
  * Helper Functions
@@ -115,7 +111,7 @@ static esp_err_t fetch_version_info(void)
         .url = OTA_VERSION_URL,
         .timeout_ms = OTA_TIMEOUT_MS,
         .buffer_size = 2048,
-        .cert_pem = OTA_CERT_PEM,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = OTA_SKIP_CERT_VERIFY,
     };
     
@@ -176,11 +172,8 @@ static esp_err_t fetch_version_info(void)
         s_version_info.firmware_size = (uint32_t)size->valuedouble;
     }
     
-    // 버전 비교
-    strncpy(s_version_info.current_version, FIRMWARE_VERSION, 
-            sizeof(s_version_info.current_version) - 1);
-    
-    s_version_info.update_available = 
+    // 버전 비교 (current_version은 ota_handler_init()에서 이미 설정됨)
+    s_version_info.update_available =
         (compare_versions(s_version_info.latest_version, s_version_info.current_version) > 0);
     
     ESP_LOGI(TAG, "Current: %s, Latest: %s, Update: %s",
@@ -243,7 +236,7 @@ static void ota_task(void *pvParameters)
         .timeout_ms = OTA_TIMEOUT_MS,
         .buffer_size = OTA_BUFFER_SIZE,
         .buffer_size_tx = 1024,
-        .cert_pem = OTA_CERT_PEM,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .skip_cert_common_name_check = OTA_SKIP_CERT_VERIFY,
         .keep_alive_enable = true,
     };
@@ -359,29 +352,30 @@ esp_err_t ota_handler_init(void)
         }
     }
     
-    // 현재 버전 설정
-    strncpy(s_version_info.current_version, FIRMWARE_VERSION, 
-            sizeof(s_version_info.current_version) - 1);
-    
-    // 앱 정보에서 버전 가져오기 (가능한 경우)
+    // 현재 버전: esp_app_get_description()에서 가져옴 (CMakeLists.txt PROJECT_VER 기반)
     const esp_app_desc_t *app_desc = esp_app_get_description();
-    if (app_desc) {
+    if (app_desc && strlen(app_desc->version) > 0) {
         strncpy(s_version_info.current_version, app_desc->version,
                 sizeof(s_version_info.current_version) - 1);
         ESP_LOGI(TAG, "Firmware: %s v%s", app_desc->project_name, app_desc->version);
+    } else {
+        strncpy(s_version_info.current_version, "0.0.0",
+                sizeof(s_version_info.current_version) - 1);
+        ESP_LOGW(TAG, "App description unavailable, version set to 0.0.0");
     }
     
     // 부팅 후 펌웨어 유효성 확인 (롤백 지원)
+    // 즉시 유효 마킹하지 않고, 시스템 초기화 완료 후 ota_handler_mark_valid() 호출 필요
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;
-    
+
     if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
         if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-            ESP_LOGW(TAG, "First boot after OTA - marking as valid");
-            esp_ota_mark_app_valid_cancel_rollback();
+            ESP_LOGW(TAG, "First boot after OTA - pending verification");
+            ESP_LOGW(TAG, "Call ota_handler_mark_valid() after system health check");
         }
     }
-    
+
     ESP_LOGI(TAG, "Running from partition: %s", running->label);
     ESP_LOGI(TAG, "OTA handler initialized");
     
@@ -398,15 +392,20 @@ esp_err_t ota_handler_check_version(void)
     if (!is_wifi_connected()) {
         return ESP_ERR_WIFI_NOT_CONNECT;
     }
-    
+
+    if (xSemaphoreTake(s_ota_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     if (s_ota_state != OTA_STATE_IDLE && s_ota_state != OTA_STATE_NO_UPDATE) {
+        xSemaphoreGive(s_ota_mutex);
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     notify_progress(OTA_STATE_CHECKING, 0, OTA_ERR_NONE);
-    
+
     esp_err_t ret = fetch_version_info();
-    
+
     if (ret == ESP_OK) {
         if (s_version_info.update_available) {
             notify_progress(OTA_STATE_IDLE, 0, OTA_ERR_NONE);
@@ -416,32 +415,41 @@ esp_err_t ota_handler_check_version(void)
     } else {
         notify_progress(OTA_STATE_FAILED, 0, OTA_ERR_VERSION_CHECK_FAILED);
     }
-    
+
+    xSemaphoreGive(s_ota_mutex);
     return ret;
 }
 
 esp_err_t ota_handler_start(void)
 {
+    if (xSemaphoreTake(s_ota_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     if (s_ota_task_handle != NULL) {
         ESP_LOGW(TAG, "OTA already in progress");
+        xSemaphoreGive(s_ota_mutex);
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     if (!is_wifi_connected()) {
         ESP_LOGE(TAG, "WiFi not connected");
+        xSemaphoreGive(s_ota_mutex);
         return ESP_ERR_WIFI_NOT_CONNECT;
     }
-    
+
     s_abort_requested = false;
-    
-    BaseType_t ret = xTaskCreate(ota_task, "ota_task", OTA_TASK_STACK, 
+
+    BaseType_t ret = xTaskCreate(ota_task, "ota_task", OTA_TASK_STACK,
                                   NULL, OTA_TASK_PRIORITY, &s_ota_task_handle);
-    
+
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create OTA task");
+        xSemaphoreGive(s_ota_mutex);
         return ESP_ERR_NO_MEM;
     }
-    
+
+    xSemaphoreGive(s_ota_mutex);
     return ESP_OK;
 }
 
@@ -502,16 +510,31 @@ bool ota_handler_can_rollback(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *last_invalid = esp_ota_get_last_invalid_partition();
-    
+
+    // last_invalid이 존재하면 이전에 실패한 파티션이 있음 → 롤백 가능
     if (last_invalid != NULL) {
         return true;
     }
-    
-    // 현재 파티션이 OTA 파티션인지 확인
+
+    // OTA 파티션에서 실행 중일 때, 다른 OTA 파티션에 유효한 앱이 있는지 확인
     if (running->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
         running->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
-        return true;
+        // 현재 파티션이 아닌 다른 OTA 파티션 찾기
+        esp_partition_subtype_t other_subtype =
+            (running->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0)
+                ? ESP_PARTITION_SUBTYPE_APP_OTA_1
+                : ESP_PARTITION_SUBTYPE_APP_OTA_0;
+        const esp_partition_t *other = esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, other_subtype, NULL);
+        if (other != NULL) {
+            // 다른 파티션의 앱 상태 확인
+            esp_ota_img_states_t other_state;
+            if (esp_ota_get_state_partition(other, &other_state) == ESP_OK) {
+                return (other_state == ESP_OTA_IMG_VALID ||
+                        other_state == ESP_OTA_IMG_UNDEFINED);
+            }
+        }
     }
-    
+
     return false;
 }

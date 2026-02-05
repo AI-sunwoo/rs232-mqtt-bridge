@@ -1,14 +1,7 @@
 # Main component CMakeLists.txt
 
-# Check if certificate exists
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/certs/github_ca.pem")
-    set(EMBED_CERT "certs/github_ca.pem")
-else()
-    set(EMBED_CERT "")
-endif()
-
 idf_component_register(
-    SRCS 
+    SRCS
         "main.c"
         "ble_service.c"
         "wifi_manager.c"
@@ -19,9 +12,9 @@ idf_component_register(
         "crc_utils.c"
         "cmd_handler.c"
         "ota_handler.c"
-    INCLUDE_DIRS 
+    INCLUDE_DIRS
         "."
-    REQUIRES 
+    REQUIRES
         nvs_flash
         esp_wifi
         esp_event
@@ -33,6 +26,5 @@ idf_component_register(
         esp_https_ota
         esp_http_client
         app_update
-    EMBED_TXTFILES
-        ${EMBED_CERT}
+        mbedtls
 )
