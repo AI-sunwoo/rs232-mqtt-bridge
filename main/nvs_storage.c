@@ -1,6 +1,12 @@
 /**
  * @file nvs_storage.c
  * @brief NVS Storage Management Implementation
+ * @version 2.1.0
+ * @date 2026-02-01
+ * 
+ * 통합 인터페이스 정의서 v2.1 기반
+ * P0-1: base_topic 저장 추가
+ * P0-2: use_jwt 저장 추가
  */
 
 #include "nvs_storage.h"
@@ -28,7 +34,7 @@ esp_err_t nvs_storage_init(void)
     }
     
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "NVS initialized");
+        ESP_LOGI(TAG, "NVS initialized (v2.1)");
     }
     return ret;
 }
@@ -78,7 +84,7 @@ esp_err_t nvs_load_wifi_config(wifi_config_data_t *config)
 }
 
 /*******************************************************************************
- * MQTT Configuration
+ * MQTT Configuration - v2.1 Enhanced
  ******************************************************************************/
 esp_err_t nvs_save_mqtt_config(const mqtt_config_data_t *config)
 {
@@ -86,21 +92,32 @@ esp_err_t nvs_save_mqtt_config(const mqtt_config_data_t *config)
     esp_err_t ret = nvs_open(NVS_NS_MQTT, NVS_READWRITE, &handle);
     if (ret != ESP_OK) return ret;
 
+    // Basic fields
     nvs_set_str(handle, "broker", config->broker);
     nvs_set_u16(handle, "port", config->port);
     nvs_set_str(handle, "username", config->username);
     nvs_set_str(handle, "password", config->password);
     nvs_set_str(handle, "client_id", config->client_id);
-    nvs_set_str(handle, "topic", config->topic);
-    nvs_set_str(handle, "user_id", config->user_id);       // SaaS user ID
-    nvs_set_str(handle, "device_id", config->device_id);   // Device ID
+    nvs_set_str(handle, "topic", config->topic);         // Legacy
+    
+    // v2.1 필수 필드 (P0-1)
+    nvs_set_str(handle, "user_id", config->user_id);
+    nvs_set_str(handle, "device_id", config->device_id);
+    nvs_set_str(handle, "base_topic", config->base_topic);  // ★ P0-1: 추가
+    
+    // Settings
     nvs_set_u8(handle, "qos", config->qos);
     nvs_set_u8(handle, "use_tls", config->use_tls ? 1 : 0);
+    nvs_set_u8(handle, "use_jwt", config->use_jwt ? 1 : 0);  // ★ P0-2: 추가
 
     ret = nvs_commit(handle);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "MQTT config saved: %s:%d (user=%s, device=%s)", 
-                 config->broker, config->port, config->user_id, config->device_id);
+        ESP_LOGI(TAG, "MQTT config saved (v2.1):");
+        ESP_LOGI(TAG, "  Broker: %s:%d", config->broker, config->port);
+        ESP_LOGI(TAG, "  User ID: %s", config->user_id);
+        ESP_LOGI(TAG, "  Device ID: %s", config->device_id);
+        ESP_LOGI(TAG, "  Base Topic: %s", config->base_topic);
+        ESP_LOGI(TAG, "  TLS: %d, JWT: %d", config->use_tls, config->use_jwt);
     }
 
     nvs_close(handle);
@@ -112,7 +129,8 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
     memset(config, 0, sizeof(mqtt_config_data_t));
     config->port = DEFAULT_MQTT_PORT;
     config->qos = DEFAULT_MQTT_QOS;
-    config->use_tls = true;  // TLS enabled by default
+    config->use_tls = false;
+    config->use_jwt = false;
 
     nvs_handle_t handle;
     esp_err_t ret = nvs_open(NVS_NS_MQTT, NVS_READONLY, &handle);
@@ -123,6 +141,7 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
 
     size_t len;
     
+    // Basic fields
     len = sizeof(config->broker);
     nvs_get_str(handle, "broker", config->broker, &len);
     
@@ -140,21 +159,36 @@ esp_err_t nvs_load_mqtt_config(mqtt_config_data_t *config)
     len = sizeof(config->topic);
     nvs_get_str(handle, "topic", config->topic, &len);
     
+    // v2.1 필수 필드 (P0-1)
     len = sizeof(config->user_id);
     nvs_get_str(handle, "user_id", config->user_id, &len);
     
     len = sizeof(config->device_id);
     nvs_get_str(handle, "device_id", config->device_id, &len);
     
+    len = sizeof(config->base_topic);  // ★ P0-1
+    nvs_get_str(handle, "base_topic", config->base_topic, &len);
+    
+    // Settings
     nvs_get_u8(handle, "qos", &config->qos);
     
     uint8_t tls;
     if (nvs_get_u8(handle, "use_tls", &tls) == ESP_OK) {
         config->use_tls = (tls != 0);
     }
+    
+    uint8_t jwt;  // ★ P0-2
+    if (nvs_get_u8(handle, "use_jwt", &jwt) == ESP_OK) {
+        config->use_jwt = (jwt != 0);
+    }
 
-    ESP_LOGI(TAG, "MQTT config loaded: %s:%d (user=%s, device=%s)", 
-             config->broker, config->port, config->user_id, config->device_id);
+    ESP_LOGI(TAG, "MQTT config loaded (v2.1):");
+    ESP_LOGI(TAG, "  Broker: %s:%d", config->broker, config->port);
+    ESP_LOGI(TAG, "  User ID: %s", config->user_id);
+    ESP_LOGI(TAG, "  Device ID: %s", config->device_id);
+    ESP_LOGI(TAG, "  Base Topic: %s", config->base_topic);
+    ESP_LOGI(TAG, "  TLS: %d, JWT: %d", config->use_tls, config->use_jwt);
+    
     nvs_close(handle);
     return ESP_OK;
 }
@@ -411,4 +445,45 @@ bool nvs_is_configured(void)
     bool configured = (nvs_get_str(handle, "ssid", NULL, &len) == ESP_OK && len > 1);
     nvs_close(handle);
     return configured;
+}
+
+/*******************************************************************************
+ * v2.1: Config Hash Calculation (설정 동기화용)
+ ******************************************************************************/
+void nvs_calculate_config_hash(char *hash_out, size_t hash_len)
+{
+    if (!hash_out || hash_len < 9) return;
+    
+    // 간단한 해시 구현 (실제로는 SHA256 등 사용 권장)
+    uint32_t hash = 0;
+    
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NS_MQTT, NVS_READONLY, &handle) == ESP_OK) {
+        char buf[128];
+        size_t len = sizeof(buf);
+        
+        if (nvs_get_str(handle, "broker", buf, &len) == ESP_OK) {
+            for (size_t i = 0; i < len && buf[i]; i++) {
+                hash = hash * 31 + buf[i];
+            }
+        }
+        
+        len = sizeof(buf);
+        if (nvs_get_str(handle, "user_id", buf, &len) == ESP_OK) {
+            for (size_t i = 0; i < len && buf[i]; i++) {
+                hash = hash * 31 + buf[i];
+            }
+        }
+        
+        len = sizeof(buf);
+        if (nvs_get_str(handle, "device_id", buf, &len) == ESP_OK) {
+            for (size_t i = 0; i < len && buf[i]; i++) {
+                hash = hash * 31 + buf[i];
+            }
+        }
+        
+        nvs_close(handle);
+    }
+    
+    snprintf(hash_out, hash_len, "%08lx", (unsigned long)hash);
 }

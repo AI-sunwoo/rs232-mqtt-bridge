@@ -1,6 +1,8 @@
 /**
  * @file ble_service.h
  * @brief BLE GATT Service for Configuration
+ * @version 3.0.0
+ * @date 2026-02-04
  */
 
 #ifndef BLE_SERVICE_H
@@ -36,6 +38,11 @@ void ble_service_stop(void);
 bool ble_service_is_connected(void);
 
 /**
+ * @brief BLE 암호화 상태 확인 (페어링 완료 여부)
+ */
+bool ble_service_is_encrypted(void);
+
+/**
  * @brief 상태 알림 전송 (Section 7.2)
  */
 esp_err_t ble_service_notify_status(const device_status_t *status);
@@ -43,7 +50,10 @@ esp_err_t ble_service_notify_status(const device_status_t *status);
 /**
  * @brief 파싱된 데이터 알림 전송 (Section 7.3)
  */
-esp_err_t ble_service_notify_data(const uint8_t *data, uint16_t len);
+esp_err_t ble_service_notify_parsed_data(const uint8_t *data, uint16_t len);
+
+// Alias for backward compatibility
+#define ble_service_notify_data ble_service_notify_parsed_data
 
 /**
  * @brief ACK 응답 전송 (Section 7.1)
@@ -54,11 +64,6 @@ esp_err_t ble_service_send_ack(uint8_t cmd, uint8_t result);
  * @brief 명령 콜백 설정
  */
 void ble_service_set_callback(ble_cmd_cb_t cb);
-
-/**
- * @brief MTU 반환
- */
-uint16_t ble_service_get_mtu(void);
 
 #ifdef __cplusplus
 }

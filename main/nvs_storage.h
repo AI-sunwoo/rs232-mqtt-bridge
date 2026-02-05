@@ -78,6 +78,13 @@ esp_err_t nvs_reset_to_defaults(void);
  */
 bool nvs_is_configured(void);
 
+/**
+ * @brief Calculate config hash for sync (v2.1)
+ * @param hash_out Output buffer (at least 9 bytes)
+ * @param hash_len Buffer length
+ */
+void nvs_calculate_config_hash(char *hash_out, size_t hash_len);
+
 #ifdef __cplusplus
 }
 #endif

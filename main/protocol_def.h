@@ -1,11 +1,13 @@
 /**
  * @file protocol_def.h
  * @brief RS232 to MQTT Protocol Definitions
- * @version 1.0
- * @date 2026-01-24
+ * @version 3.0.0
+ * @date 2026-02-04
  * 
- * 프로토콜 스펙 v1.0 기반 정의
- * BLE Communication & Data Parsing Protocol
+ * 통합 인터페이스 정의서 v3.0 기반 정의
+ * S0: 보안 강화 (EMQX 인증 필수)
+ * S1: MQTT 토픽/QoS 통일, legacy 토픽 제거
+ * S2: 중복 코드 제거
  */
 
 #ifndef PROTOCOL_DEF_H
@@ -17,6 +19,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*******************************************************************************
+ * Schema Version (통합 인터페이스 정의서 버전)
+ ******************************************************************************/
+#define SCHEMA_VERSION_MAJOR    3
+#define SCHEMA_VERSION_MINOR    0
+#define SCHEMA_VERSION_PATCH    0
+#define SCHEMA_VERSION_STRING   "3.0.0"
 
 /*******************************************************************************
  * BLE Service and Characteristic UUIDs
@@ -54,21 +64,47 @@ typedef enum {
     CMD_RESET_CONFIG    = 0x08,
     CMD_START_MONITOR   = 0x09,
     CMD_STOP_MONITOR    = 0x0A,
+    CMD_REQUEST_SYNC    = 0x0B,     // v2.1: 설정 동기화 요청
     
     // OTA Commands
-    CMD_OTA_CHECK       = 0x10,     // 버전 확인
-    CMD_OTA_START       = 0x11,     // OTA 업데이트 시작
-    CMD_OTA_ABORT       = 0x12,     // OTA 중단
-    CMD_OTA_ROLLBACK    = 0x13,     // 이전 버전으로 롤백
-    CMD_OTA_GET_VERSION = 0x14,     // 현재 버전 정보 요청
+    CMD_OTA_CHECK       = 0x10,
+    CMD_OTA_START       = 0x11,
+    CMD_OTA_ABORT       = 0x12,
+    CMD_OTA_ROLLBACK    = 0x13,
+    CMD_OTA_GET_VERSION = 0x14,
     
     RSP_ACK             = 0x80,
     RSP_STATUS          = 0x81,
     RSP_DATA            = 0x82,
-    RSP_OTA_PROGRESS    = 0x83,     // OTA 진행률 알림
-    RSP_OTA_VERSION     = 0x84,     // 버전 정보 응답
+    RSP_OTA_PROGRESS    = 0x83,
+    RSP_OTA_VERSION     = 0x84,
+    RSP_CONFIG_SYNC     = 0x85,     // v2.1: 설정 동기화 응답
     RSP_ERROR           = 0xFF
 } cmd_code_t;
+
+/*******************************************************************************
+ * MQTT Remote Command Types (P0-3: 원격 명령 처리)
+ ******************************************************************************/
+typedef enum {
+    MQTT_CMD_UPDATE_CONFIG      = 0x01,     // 설정 업데이트
+    MQTT_CMD_RESTART            = 0x02,     // 디바이스 재시작
+    MQTT_CMD_REQUEST_STATUS     = 0x03,     // 상태 요청
+    MQTT_CMD_START_MONITOR      = 0x04,     // 모니터링 시작
+    MQTT_CMD_STOP_MONITOR       = 0x05,     // 모니터링 중지
+    MQTT_CMD_FACTORY_RESET      = 0x06,     // 공장 초기화
+} mqtt_cmd_type_t;
+
+/*******************************************************************************
+ * Config Types for Remote Update (P0-3)
+ ******************************************************************************/
+typedef enum {
+    CONFIG_TYPE_WIFI        = 0x01,
+    CONFIG_TYPE_MQTT        = 0x02,
+    CONFIG_TYPE_UART        = 0x03,
+    CONFIG_TYPE_PROTOCOL    = 0x04,
+    CONFIG_TYPE_FIELDS      = 0x05,
+    CONFIG_TYPE_ALL         = 0xFF,
+} config_type_t;
 
 /*******************************************************************************
  * Protocol Types (Section 1.2)
@@ -134,6 +170,7 @@ typedef enum {
     ERR_MQTT_ERROR          = 0x06,
     ERR_NVS_ERROR           = 0x07,
     ERR_PARSE_ERROR         = 0x08,
+    ERR_CONFIG_SYNC_ERROR   = 0x09,     // v2.1: 설정 동기화 에러
     // OTA Errors
     ERR_OTA_WIFI_NOT_CONNECTED = 0x10,
     ERR_OTA_VERSION_CHECK_FAIL = 0x11,
@@ -166,26 +203,32 @@ typedef struct {
     char password[WIFI_PASSWORD_MAX_LEN + 1];
 } wifi_config_data_t;
 
-// MQTT Configuration (Section 4.2)
+// MQTT Configuration (Section 4.2) - P0-1, P0-2 수정
 #define MQTT_BROKER_MAX_LEN     128
 #define MQTT_USERNAME_MAX_LEN   64
-#define MQTT_PASSWORD_MAX_LEN   64
+#define MQTT_PASSWORD_MAX_LEN   512     // v2.1: JWT 토큰 지원을 위해 확장
 #define MQTT_CLIENT_ID_MAX_LEN  64
 #define MQTT_TOPIC_MAX_LEN      128
-#define MQTT_USER_ID_MAX_LEN    64
-#define MQTT_DEVICE_ID_MAX_LEN  32
+#define MQTT_USER_ID_MAX_LEN    40      // UUID 형식
+#define MQTT_DEVICE_ID_MAX_LEN  50
+#define MQTT_BASE_TOPIC_MAX_LEN 128     // v2.1: baseTopic 추가
 
 typedef struct {
     char broker[MQTT_BROKER_MAX_LEN + 1];
     uint16_t port;
     char username[MQTT_USERNAME_MAX_LEN + 1];
-    char password[MQTT_PASSWORD_MAX_LEN + 1];
+    char password[MQTT_PASSWORD_MAX_LEN + 1];   // 비밀번호 또는 JWT 토큰
     char client_id[MQTT_CLIENT_ID_MAX_LEN + 1];
     char topic[MQTT_TOPIC_MAX_LEN + 1];         // Legacy topic (optional)
-    char user_id[MQTT_USER_ID_MAX_LEN + 1];     // SaaS user ID
-    char device_id[MQTT_DEVICE_ID_MAX_LEN + 1]; // Device ID
+    
+    // v2.1 필수 필드 (P0-1)
+    char user_id[MQTT_USER_ID_MAX_LEN + 1];     // ★ SaaS user ID (필수)
+    char device_id[MQTT_DEVICE_ID_MAX_LEN + 1]; // ★ Device ID (필수)
+    char base_topic[MQTT_BASE_TOPIC_MAX_LEN + 1]; // ★ Base topic (필수)
+    
     uint8_t qos;
     bool use_tls;
+    bool use_jwt;                               // v2.1: JWT 인증 사용 여부 (P0-2)
 } mqtt_config_data_t;
 
 // UART Configuration (Section 4.3)
@@ -228,7 +271,7 @@ typedef struct {
 
 typedef struct {
     uint8_t sentence_filter_count;
-    char sentence_filters[NMEA_MAX_FILTERS][6];  // e.g., "GPGGA"
+    char sentence_filters[NMEA_MAX_FILTERS][6];
     bool validate_checksum;
     char talker_id_filter[3];
 } nmea_config_t;
@@ -284,7 +327,7 @@ typedef struct {
 } data_definition_t;
 
 /*******************************************************************************
- * Status Structure (Section 7.2)
+ * Status Structure (Section 7.2) - v2.1 확장
  ******************************************************************************/
 typedef struct __attribute__((packed)) {
     uint8_t wifi_status;        // 0=Disconnected, 1=Connected
@@ -297,7 +340,37 @@ typedef struct __attribute__((packed)) {
     uint32_t tx_count;          // Transmitted messages
     uint32_t error_count;       // CRC/parse errors
     uint32_t firmware_version;  // Version as 0xMMmmPPbb
+    uint32_t free_heap;         // v2.1: Free heap size
+    char config_hash[9];        // v2.1: 설정 해시 (8자 + null)
 } device_status_t;
+
+/*******************************************************************************
+ * Config Sync Request/Response (P0-3: 설정 동기화)
+ ******************************************************************************/
+typedef struct {
+    char device_id[MQTT_DEVICE_ID_MAX_LEN + 1];
+    char user_id[MQTT_USER_ID_MAX_LEN + 1];
+    char current_version[16];
+    char config_hash[9];
+    uint32_t timestamp;
+} config_sync_request_t;
+
+typedef struct {
+    bool update_available;
+    char latest_version[16];
+    uint32_t timestamp;
+    // config payload는 별도로 처리
+} config_sync_response_t;
+
+/*******************************************************************************
+ * MQTT Remote Command (P0-3)
+ ******************************************************************************/
+typedef struct {
+    mqtt_cmd_type_t command;
+    uint32_t timestamp;
+    char request_id[37];        // UUID
+    config_type_t config_type;  // update_config 명령 시 사용
+} mqtt_remote_command_t;
 
 /*******************************************************************************
  * Parsed Data Structure (Section 7.3)
@@ -344,13 +417,14 @@ typedef struct {
     data_type_t type;
     field_value_t value;
     double scaled_value;
+    bool crc_valid;             // v2.1: CRC 검증 결과
 } parsed_field_t;
 
 /*******************************************************************************
  * System Configuration
  ******************************************************************************/
 #define DEVICE_NAME             "RS232_MQTT_Bridge"
-#define FIRMWARE_VERSION        0x01000000  // v1.0.0.0
+#define FIRMWARE_VERSION        0x03000000  // v3.0.0.0
 
 // Default UART settings
 #define DEFAULT_BAUDRATE        115200
@@ -360,16 +434,16 @@ typedef struct {
 #define DEFAULT_FLOW_CONTROL    0
 
 // Default MQTT settings
-#define DEFAULT_MQTT_PORT       8883    // TLS port (recommended)
-#define DEFAULT_MQTT_PORT_TCP   1883    // Non-TLS port
-#define DEFAULT_MQTT_QOS        1
+#define DEFAULT_MQTT_PORT       1883
+#define DEFAULT_MQTT_PORT_TLS   8883
+#define DEFAULT_MQTT_QOS        1           // v3.0: QoS 0→1 변경 (데이터 손실 방지)
 
 // UART Hardware Configuration
-#define UART_PORT_NUM           1       // UART_NUM_1
+#define UART_PORT_NUM           1
 #define UART_TX_PIN             17
 #define UART_RX_PIN             18
-#define UART_RTS_PIN            (-1)    // UART_PIN_NO_CHANGE
-#define UART_CTS_PIN            (-1)    // UART_PIN_NO_CHANGE
+#define UART_RTS_PIN            (-1)
+#define UART_CTS_PIN            (-1)
 #define UART_BUF_SIZE           1024
 
 // Frame buffer
@@ -391,6 +465,12 @@ typedef struct {
 #define UART_RX_QUEUE_SIZE      10
 #define PARSED_DATA_QUEUE_SIZE  20
 #define BLE_CMD_QUEUE_SIZE      10
+
+/*******************************************************************************
+ * Helper Macros
+ ******************************************************************************/
+// 설정 해시 계산용 (간단한 구현)
+#define CONFIG_HASH_LEN         8
 
 #ifdef __cplusplus
 }

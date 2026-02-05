@@ -500,7 +500,6 @@ esp_err_t ota_handler_mark_valid(void)
 
 bool ota_handler_can_rollback(void)
 {
-    esp_ota_img_states_t ota_state;
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *last_invalid = esp_ota_get_last_invalid_partition();
     
